@@ -1,3 +1,34 @@
+const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+
+const dispatchFormEvent = (editor, name, detail = {}) => {
+	editor.getContainer().closest('form')?.dispatchEvent(
+		new CustomEvent(name, {
+			composed: true,
+			cancelable: true,
+			detail,
+		}),
+	)
+};
+
+// const dispatchFormEvent = (editor, name, detail = {}) => {
+// 	editor.getContainer().closest('form')?.dispatchEvent(
+// 		new CustomEvent(name, {
+// 			composed: true,
+// 			cancelable: true,
+// 			detail,
+// 		}),
+// 	);
+// };
+
+const generateUUID = () => {
+	if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+		return crypto.randomUUID();
+	}
+	return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, c =>
+		(c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)
+	);
+};
+
 export default function tinyeditor({
 	activePanel,
 	state,
@@ -50,15 +81,24 @@ export default function tinyeditor({
 
 	let editors = window.filamentTinyEditors || {};
 
-	const dispatchFormEvent = (editor, name, detail = {}) => {
-		editor.getContainer().closest('form')?.dispatchEvent(
-			new CustomEvent(name, {
-				composed: true,
-				cancelable: true,
-				detail,
-			}),
-		);
-	};
+	// const generateUUID = () => {
+	//     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+	//         return crypto.randomUUID();
+	//     }
+	//     return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, c =>
+	//         (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)
+	//     );
+	// };
+
+	// const dispatchFormEvent = (editor, name, detail = {}) => {
+	// 	editor.getContainer().closest('form')?.dispatchEvent(
+	// 		new CustomEvent(name, {
+	// 			composed: true,
+	// 			cancelable: true,
+	// 			detail,
+	// 		}),
+	// 	);
+	// };
 
 	return {
 		activePanel,
@@ -172,9 +212,16 @@ export default function tinyeditor({
 
 			this.initEditor(content);
 		},
+		getFileAttachmentUrl: (fileKey) =>
+			this.$wire.callSchemaComponentMethod(
+				key,
+				'getUploadedFileAttachmentTemporaryUrl',
+				{
+					attachment: fileKey,
+				},
+			),
 		initEditor(content) {
 			let _this = this;
-			let $wire = this.$wire;
 
 			const defaultFontFamilyFormats = "Arial=arial,helvetica,sans-serif; Courier New=courier new,courier,monospace; AkrutiKndPadmini=Akpdmi-n";
 			const fontFamilyFormats = fontfamily || defaultFontFamilyFormats;
@@ -273,11 +320,17 @@ export default function tinyeditor({
 					editor.on("blur", function (e) {
 						_this.updatedAt = Date.now();
 						_this.state = editor.getContent();
+						_this.$wire.callSchemaComponentMethod(key, 'cleanUpUnusedImages', {
+							state: _this.state,
+						});
 					});
 
 					editor.on("change", function (e) {
 						_this.updatedAt = Date.now();
 						_this.state = editor.getContent();
+						_this.$wire.callSchemaComponentMethod(key, 'cleanUpUnusedImages', {
+							state: _this.state,
+						});
 					});
 
 					editor.on("init", function (e) {
@@ -306,6 +359,10 @@ export default function tinyeditor({
 					}
 				},
 
+				removeImagesEventCallback: (imageSrc) => {
+					this.$wire.callSchemaComponentMethod(key, 'deleteUploadedImage', { src: imageSrc });
+				},
+
 				images_upload_handler: (blobInfo, progress) =>
 					new Promise((success, failure) => {
 						if (!blobInfo.blob()) {
@@ -326,6 +383,7 @@ export default function tinyeditor({
 							/[018]/g, (c) =>
 							(c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)
 						);
+						// let fileKey = generateUUID();
 
 						// Dispatch uploading event
 						this.editor().getContainer().dispatchEvent(
@@ -343,42 +401,49 @@ export default function tinyeditor({
 							`componentFileAttachments.${statePath}.${fileKey}`,
 							blobInfo.blob(),
 							() => {
-								// File upload completed
-								this.$wire.callSchemaComponentMethod(
-									key,
-									'getUploadedFileAttachmentTemporaryUrl',
-									{
-										attachment: fileKey,
-									}
-								).then((url) => {
-									if (!url) {
-										failure("Image upload failed - no URL returned");
+
+								this.getFileAttachmentUrl(fileKey)
+									.then((tempUrl) => {
+										if (!tempUrl) {
+											failure("Image upload failed - no URL returned");
+											this.isUploadingFile = false;
+											dispatchFormEvent(this.editor(), 'form-processing-finished');
+											return;
+										}
+
+										// Dispatch uploaded event
+										this.editor().getContainer().dispatchEvent(
+											new CustomEvent('rich-editor-uploaded-file', {
+												bubbles: true,
+												detail: {
+													key: key,
+													livewireId: this.$wire.id,
+												},
+											})
+										);
+
+										// Dispatch form processing finished event
+										dispatchFormEvent(this.editor(), 'form-processing-finished');
 										this.isUploadingFile = false;
-										return;
-									}
+										success(tempUrl);
 
-									// Success - return the uploaded image URL
-									success(url);
+										const editor = this.editor();
 
-									// Dispatch uploaded event
-									this.editor().getContainer().dispatchEvent(
-										new CustomEvent('rich-editor-uploaded-file', {
-											bubbles: true,
-											detail: {
-												key: key,
-												livewireId: this.$wire.id,
-											},
-										})
-									);
-
-									// Dispatch form processing finished event
-									dispatchFormEvent(this.editor(), 'form-processing-finished');
-
-									this.isUploadingFile = false;
-								}).catch((error) => {
-									failure("Failed to get uploaded file URL: " + error);
-									this.isUploadingFile = false;
-								});
+										editor.once('SetContent', ({ content, format, paster, selection }) => {
+											const imgs = editor.getBody().querySelectorAll('img:not([data-id])');
+											if (imgs.length > 0) {
+												// Tag the last inserted <img>
+												const img = imgs[imgs.length - 1];
+												img.setAttribute('data-id', fileKey);
+											}
+										});
+									})
+									.catch((error) => {
+										console.error('Upload error:', error);
+										failure(error);
+										this.isUploadingFile = false;
+										dispatchFormEvent(this.editor(), 'form-processing-finished');
+									});
 							},
 							(error) => {
 								// Upload error
